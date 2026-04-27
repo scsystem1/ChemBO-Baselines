@@ -1,0 +1,6 @@
+{
+  "TASK_REACTION_BH": "<PLACEHOLDER: Buchwald-Hartwig task-reaction SMILES, e.g. Reactant.[Aryl halide] -> Product>",
+  "TASK_REACTION_DA": "<PLACEHOLDER: Direct-Arylation task-reaction SMILES, e.g. Substrate + ArBr -> Product>",
+  "TASK_REACTION_AMIDE": "<PLACEHOLDER: Amide-coupling task-reaction description, e.g. Amine + Acid -> Amide>",
+  "AWS_BEDROCK_REGION": "<PLACEHOLDER: AWS region for Bedrock, e.g. us-east-1>"
+}

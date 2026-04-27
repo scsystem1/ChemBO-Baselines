@@ -1,0 +1,6 @@
+pytest
+matplotlib
+seaborn
+cloudpickle
+python-dotenv
+pre-commit

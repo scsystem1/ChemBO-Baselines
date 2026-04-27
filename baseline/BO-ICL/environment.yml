@@ -1,0 +1,21 @@
+name: boicl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - pip
+  - pip:
+      - langchain
+      - langchain_community
+      - langchain_openai
+      - langchain_anthropic
+      - openai>=1.40.0
+      - faiss-cpu
+      - tiktoken
+      - torch
+      - botorch
+      - gpytorch

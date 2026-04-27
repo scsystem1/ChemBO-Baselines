@@ -1,0 +1,17 @@
+torch
+gpytorch
+botorch
+pytorch-lightning
+transformers>=4.41,<5
+wandb
+scikit-learn
+scikit-learn-extra
+pandas
+tqdm
+openai
+peft>=0.11
+matplotlib
+jsonargparse
+sentencepiece>=0.1.99
+protobuf
+huggingface_hub

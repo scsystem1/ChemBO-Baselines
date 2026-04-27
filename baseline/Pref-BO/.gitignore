@@ -1,0 +1,4 @@
+.DS_Store
+
+# Sensitive config (contains real SMILES and AWS region)
+smiles_config.json
