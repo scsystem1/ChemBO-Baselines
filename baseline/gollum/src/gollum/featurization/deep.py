@@ -6,6 +6,7 @@ from typing import Optional, List
 from peft import LoraConfig, get_peft_model
 from gollum.featurization.utils.pooling import average_pool, last_token_pool, weighted_average_pool
 from gollum.featurization.text import get_model_and_tokenizer
+from gollum.utils.device import empty_cuda_cache, resolve_torch_device
 from gollum.featurization.utils.layers import get_target_layers
 from torch.nn import init
 
@@ -84,7 +85,8 @@ class LLMFeaturizer(BaseNNFeaturizer):
     ):
         super().__init__(input_dim=input_dim, projection_dim=projection_dim)
         print(model_name, "for LLM")
-        self.llm, self.tokenizer = get_model_and_tokenizer(model_name, "cuda")
+        self.device = resolve_torch_device()
+        self.llm, self.tokenizer = get_model_and_tokenizer(model_name, self.device.type)
         if trainable:
             target_modules = get_target_layers(
                 self.llm, target_ratio, from_top
@@ -121,17 +123,17 @@ class LLMFeaturizer(BaseNNFeaturizer):
             self.projector = nn.Identity()
 
         self.llm = self.llm.to(
-            device=torch.device("cuda"), dtype=torch.float32
+            device=self.device, dtype=torch.float32
         )
         self.projector = self.projector.to(
-            device=torch.device("cuda"), dtype=torch.float32
+            device=self.device, dtype=torch.float32
         )
 
     def get_embeddings(self, x, batch_size=4):
-        torch.cuda.empty_cache()
+        empty_cuda_cache(self.device.type)
 
-        x = x.to(dtype=torch.float32)
-        self.llm = self.llm.to(dtype=torch.float32)
+        x = x.to(device=self.device, dtype=torch.float32)
+        self.llm = self.llm.to(device=self.device, dtype=torch.float32)
 
         n_points = x.size(0)
         ids_split = int(x.shape[-1] / 2)
@@ -141,7 +143,7 @@ class LLMFeaturizer(BaseNNFeaturizer):
         current_idx = 0
         for start_idx in range(0, n_points, batch_size):
 
-            torch.cuda.empty_cache()
+            empty_cuda_cache(self.device.type)
             end_idx = min(start_idx + batch_size, n_points)
             input_ids = x[start_idx:end_idx, :ids_split].long()
             attn_mask = x[start_idx:end_idx, ids_split:].long()
@@ -180,7 +182,7 @@ class LLMFeaturizer(BaseNNFeaturizer):
             embedding_chunks.append(pooled.to(dtype=torch.float64))
             current_idx += batch_size
             del outputs, last_hidden_state, pooled
-            torch.cuda.empty_cache()
+            empty_cuda_cache(self.device.type)
         
         embeddings = torch.cat(embedding_chunks, dim=0)
         return embeddings

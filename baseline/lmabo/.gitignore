@@ -1,0 +1,9 @@
+__pycache__/
+.ipynb_checkpoints/
+log/
+llm_processes/
+LLAMBO_modified/
+key.py
+temp.*
+slurm_*
+*.sh

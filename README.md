@@ -7,10 +7,12 @@ Included:
 - `baseline/BO-ICL`
 - `baseline/Pref-BO`
 - `baseline/Reasoning-BO`
+- `baseline/bora`
 - `baseline/gollum`
 - `baseline/common/tabular_benchmarks.py`
+- `run_tabular_baseline.py` as a unified experiment launcher
 - `scripts/` with baseline-focused run scripts
-- `data/DAR.csv` and `data/OCM.csv` for the tabular benchmark runs
+- `data/DAR.csv`, `data/OCM.csv`, and `data/suzuki.csv` for the tabular benchmark runs
 
 Not included:
 
@@ -22,3 +24,6 @@ Notes:
 
 - Some baseline subprojects preserve their own upstream layout and dependency files.
 - The run scripts assume this repository root contains `baseline/`, `scripts/`, and `data/`.
+- The unified launcher can forward dataset-specific and baseline-specific CLI arguments while writing each run into its own timestamped output directory.
+- `scripts/setup_baseline_envs.sh` bootstraps the per-baseline conda environments that are used in this repo.
+- `scripts/run_suzuki_reasoningbo_gollum_3x.sh` runs the requested Suzuki benchmark suite for Reasoning-BO and GOLLuM.

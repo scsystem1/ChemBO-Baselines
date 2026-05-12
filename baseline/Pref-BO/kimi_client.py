@@ -13,15 +13,13 @@ DEFAULT_MODEL = "kimi-k2.5-thinking"
 
 def _resolve_model_name(model_name: str | None = None) -> str:
     raw_name = (model_name or os.getenv("PREFBO_LLM_MODEL") or os.getenv("KIMI_MODEL") or DEFAULT_MODEL).strip()
-    if raw_name == "kimi-k2.5-thinking":
-        return os.getenv("PREFBO_KIMI_MODEL_ALIAS", "kimi-k2.5")
     return raw_name
 
 
 def _build_client() -> OpenAI:
     api_key = (
-        os.getenv("PREFBO_API_KEY")
-        or os.getenv("DASHSCOPE_API_KEY")
+        os.getenv("DASHSCOPE_API_KEY")
+        or os.getenv("PREFBO_API_KEY")
         or os.getenv("MOONSHOT_API_KEY")
         or os.getenv("OPENAI_API_KEY")
     )

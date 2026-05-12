@@ -7,10 +7,7 @@ config = Config()
 
 
 def _resolve_model_name() -> str:
-    raw_name = (config.KIMI_MODEL_NAME or "kimi-k2.5-thinking").strip()
-    if raw_name == "kimi-k2.5-thinking":
-        return "kimi-k2.5"
-    return raw_name
+    return (config.KIMI_MODEL_NAME or "kimi-k2.5-thinking").strip()
 
 
 class KimiClient:

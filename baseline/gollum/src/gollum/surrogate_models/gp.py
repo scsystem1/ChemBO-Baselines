@@ -23,10 +23,18 @@ import numpy as np
 import torch
 import gpytorch
 import os
+from gollum.utils.device import empty_cuda_cache, resolve_torch_device
 
 
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+
+class CPUFriendlyAdamW(torch.optim.AdamW):
+    def _cuda_graph_capture_health_check(self):
+        if resolve_torch_device().type == "cpu":
+            return
+        return super()._cuda_graph_capture_health_check()
 
 
 class SurrogateModel(ABC):
@@ -91,7 +99,7 @@ class GP(SurrogateModel, SingleTaskGP):
 
         self.initialize(**hypers_to_use)
         self.gp_lr = gp_lr
-        self.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        self.to(resolve_torch_device())
 
     def fit(self):
         self.train()
@@ -149,10 +157,7 @@ class DeepGP(SurrogateModel, SingleTaskGP):
         finetuning_model: Union[None, BaseNNFeaturizer] = None,
     ) -> None:
 
-        tkwargs = {
-            "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-            "dtype": torch.float64,
-        }
+        tkwargs = {"device": resolve_torch_device(), "dtype": torch.float64}
         train_x = train_x.to(torch.float64)
         train_y = train_y.to(**tkwargs)
 
@@ -224,7 +229,7 @@ class DeepGP(SurrogateModel, SingleTaskGP):
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
     def to_gpu(self):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_torch_device()
         self.to(device)
         self.likelihood.to(device)
         self.finetuning_model.to(device)
@@ -239,7 +244,7 @@ class DeepGP(SurrogateModel, SingleTaskGP):
         mll = ExactMarginalLogLikelihood(self.likelihood, self)
         mll.train()
         total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        mll.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        mll.to(resolve_torch_device())
 
         def gp_closure():
             self.optimizer.zero_grad()
@@ -249,7 +254,7 @@ class DeepGP(SurrogateModel, SingleTaskGP):
             grads = [p.grad for p in self.parameters() if p.requires_grad]
             return mll_loss, grads
 
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = CPUFriendlyAdamW(
             [
                 {
                     "params": (
@@ -291,7 +296,7 @@ class DeepGP(SurrogateModel, SingleTaskGP):
     def predict(
         self, x, observation_noise=True, return_var=True, return_posterior=False
     ):
-        torch.cuda.empty_cache()
+        empty_cuda_cache()
         for param in self.finetuning_model.parameters():
             param.requires_grad = False
 
@@ -307,5 +312,3 @@ class DeepGP(SurrogateModel, SingleTaskGP):
             if return_posterior
             else (posterior.mean, posterior.variance) if return_var else posterior.mean
         )
-
-

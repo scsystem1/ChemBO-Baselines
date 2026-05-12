@@ -4,6 +4,7 @@ from gollum.utils.config import instantiate_class
 from torch import Tensor
 import torch
 import warnings
+from gollum.utils.device import resolve_torch_device
 
 class BotorchOptimizer:
     def __init__(
@@ -13,10 +14,7 @@ class BotorchOptimizer:
         acq_function_config: Optional[Dict[str, Any]] = None,
         batch_strategy: str = "kriging",
         batch_size: int = 1,
-        tkwargs: Optional[Dict[str, Any]] = {
-            "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-            "dtype": torch.float64,
-        },
+        tkwargs: Optional[Dict[str, Any]] = None,
     ):
 
         self.design_space = design_space
@@ -30,7 +28,10 @@ class BotorchOptimizer:
         self.batch_strategy = batch_strategy
         self.batch_size = batch_size
 
-        self.tkwargs = tkwargs
+        self.tkwargs = tkwargs or {
+            "device": resolve_torch_device(),
+            "dtype": torch.float64,
+        }
         print("Using device:", self.tkwargs["device"])
 
 

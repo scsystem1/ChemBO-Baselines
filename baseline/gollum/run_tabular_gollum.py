@@ -20,16 +20,24 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT / "baseline"))
 sys.path.append(str(Path(__file__).resolve().parent / "src"))
 
+from common.experiment_tracking import (
+    TrialTrace,
+    build_best_results_matrix,
+    build_trial_trace,
+    export_trajectory_artifacts,
+    summarize_best_results,
+)
+from common.progress import progress_bar, progress_log
 from common.tabular_benchmarks import dataframe_to_texts, load_benchmark_spec
 from gollum.bo.optimizer import BotorchOptimizer
 from gollum.data.module import BaseDataModule
 from gollum.surrogate_models.gp import SurrogateModel
 from gollum.utils.config import instantiate_class
+from gollum.utils.device import resolve_torch_device
 from botorch.acquisition import AcquisitionFunction
 
 DEFAULT_INIT_SIZE = 10
-DEFAULT_HF_HOME = Path("/data/shared/huggingface")
-DEFAULT_VISIBLE_GPUS = "2"
+DEFAULT_HF_HOME = ROOT / ".cache" / "huggingface"
 
 warnings.filterwarnings("ignore", category=InputDataWarning)
 warnings.filterwarnings(
@@ -67,20 +75,32 @@ def cap_cpu_threads(max_threads: int = 100) -> int:
     return thread_cap
 
 
-def load_existing_results(results_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+def _pad_results_matrix(results: np.ndarray, target_width: int) -> np.ndarray:
+    if results.shape[1] >= target_width:
+        return results
+    padded = np.full((results.shape[0], target_width), np.nan, dtype=float)
+    padded[:, : results.shape[1]] = results
+    return padded
+
+
+def load_existing_results(results_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     if not results_path.exists():
         return None
     with np.load(results_path) as payload:
         results = np.asarray(payload["results"], dtype=float)
+        if "trace_lengths" in payload.files:
+            trace_lengths = np.asarray(payload["trace_lengths"], dtype=int)
+        else:
+            trace_lengths = np.sum(~np.isnan(results), axis=1, dtype=int)
         if "trial_numbers" in payload.files:
             trial_numbers = np.asarray(payload["trial_numbers"], dtype=int)
         else:
             trial_numbers = np.arange(1, results.shape[0] + 1, dtype=int)
-    return results, trial_numbers
+    return results, trace_lengths, trial_numbers
 
 
 def log(message: str) -> None:
-    print(message, flush=True)
+    progress_log(message)
 
 
 def to_1d_int_numpy(values) -> np.ndarray:
@@ -95,12 +115,42 @@ def configure_runtime_paths() -> Path:
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["TRANSFORMERS_CACHE"] = str(hf_home / "hub")
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hf_home / "hub")
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", os.getenv("GOLLUM_CUDA_VISIBLE_DEVICES", DEFAULT_VISIBLE_GPUS))
+    requested_visible_gpus = os.getenv("GOLLUM_CUDA_VISIBLE_DEVICES", "").strip()
+    if requested_visible_gpus:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", requested_visible_gpus)
     log(
         f"[GOLLuM] Runtime paths configured: HF_HOME={hf_home}, "
         f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '')}"
     )
     return hf_home
+
+
+def resolve_runtime_device() -> torch.device:
+    requested_device = os.getenv("GOLLUM_DEVICE", "").strip().lower()
+    if requested_device == "cpu":
+        log("[GOLLuM] Using CPU because GOLLUM_DEVICE=cpu.")
+        return torch.device("cpu")
+    if requested_device == "cuda":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            log(f"[GOLLuM] Using CUDA device: {torch.cuda.get_device_name(0)}")
+            return device
+        log("[GOLLuM] GOLLUM_DEVICE=cuda was requested, but CUDA is unavailable. Falling back to CPU.")
+        return torch.device("cpu")
+
+    if torch.cuda.is_available():
+        device = resolve_torch_device()
+        log(f"[GOLLuM] CUDA is available. Using device: {torch.cuda.get_device_name(0)}")
+        return device
+
+    if torch.cuda.device_count() > 0:
+        log(
+            "[GOLLuM] CUDA devices were detected, but PyTorch could not initialize CUDA. "
+            "This usually means the NVIDIA driver is older than the PyTorch CUDA build. Falling back to CPU."
+        )
+    else:
+        log("[GOLLuM] No CUDA device is available. Falling back to CPU.")
+    return torch.device("cpu")
 
 
 def ensure_t5_available(hf_home: Path) -> None:
@@ -118,11 +168,10 @@ def ensure_t5_available(hf_home: Path) -> None:
     log("[GOLLuM] T5 download completed.")
 
 
-def build_processed_dataset(dataset_name: str, output_dir: Path) -> Path:
-    spec, df = load_benchmark_spec(ROOT, dataset_name)
+def build_processed_dataset(dataset_name: str, spec, df: pd.DataFrame, output_dir: Path) -> Path:
     processed = pd.DataFrame(
         {
-            "procedure": dataframe_to_texts(dataset_name, df),
+            "procedure": dataframe_to_texts(dataset_name, df, text_columns=spec.text_columns),
             "objective": df[spec.target_column].astype(float),
         }
     )
@@ -250,16 +299,14 @@ def setup_bo(config: dict, design_space: torch.Tensor):
     )
 
 
-def run_trial(data_path: Path, seed: int, total_budget: int, init_size: int) -> np.ndarray:
-    if not torch.cuda.is_available():
-        raise RuntimeError("GOLLuM DeepGP baseline requires CUDA in this codebase.")
-
+def run_trial(data_path: Path, seed: int, total_budget: int, init_size: int) -> TrialTrace:
+    device = resolve_runtime_device()
     bo_steps = total_budget - init_size
     config = build_config(data_path, seed, init_size, bo_steps)
     seed_everything(seed, workers=True)
     log(
         f"[GOLLuM] Trial {seed + 1} starting with init_size={init_size}, total_budget={total_budget}, "
-        f"bo_steps={bo_steps}"
+        f"bo_steps={bo_steps}, device={device.type}"
     )
     run = wandb.init(project="gollum-baseline", mode="disabled", reinit=True)
     try:
@@ -271,64 +318,88 @@ def run_trial(data_path: Path, seed: int, total_budget: int, init_size: int) -> 
         dm.heldout_x = dm.x[dm.heldout_indices]
         dm.heldout_y = dm.y[dm.heldout_indices]
         bo = setup_bo(config, dm.heldout_x)
-        trace = [float(dm.train_y.max().item())]
+        selected_indices = dm.train_indexes.astype(int).tolist()
+        observed_values = [float(dm.y[idx].item()) for idx in selected_indices]
+        phases = ["init"] * len(selected_indices)
+        trace = np.maximum.accumulate(np.asarray(observed_values, dtype=float)).tolist()
         log(
             f"[GOLLuM] Trial {seed + 1} initialized with {len(dm.train_indexes)} points, "
             f"remaining={len(dm.heldout_indices)}, best={trace[-1]:.4f}"
         )
 
-        for step in range(bo_steps):
-            log(
-                f"[GOLLuM] Trial {seed + 1} iteration {step + 1}/{bo_steps}: "
-                f"evaluated={len(dm.train_indexes)}, remaining={len(dm.heldout_indices)}, current_best={trace[-1]:.4f}"
-            )
-            train_x = dm.train_x.clone().to("cuda")
-            train_y = dm.train_y.clone().to("cuda")
-            design_space = dm.heldout_x.clone().to("cuda")
-            stage_start = time.perf_counter()
-            log(f"[GOLLuM] Trial {seed + 1} iteration {step + 1}: fitting DeepGP and optimizing acquisition...")
-            x_next, indices = bo.suggest_next_experiments(
-                train_x, train_y, design_space, return_indices=True
-            )
-            stage_elapsed = time.perf_counter() - stage_start
-            log(f"[GOLLuM] Trial {seed + 1} iteration {step + 1}: model fit + acquisition finished in {stage_elapsed:.1f}s")
-            indices_np = to_1d_int_numpy(indices)
-            if indices_np.size != 1:
-                raise RuntimeError(
-                    f"Expected exactly one selected candidate, got {indices_np.size}. "
-                    f"indices={indices_np.tolist()}"
+        with progress_bar(total=total_budget, desc=f"GOLLuM seed={seed}", unit="eval") as progress:
+            progress.update(len(dm.train_indexes))
+            progress.set_postfix_str(f"best={trace[-1]:.4f}")
+            for step in range(bo_steps):
+                log(
+                    f"[GOLLuM] Trial {seed + 1} iteration {step + 1}/{bo_steps}: "
+                    f"evaluated={len(dm.train_indexes)}, remaining={len(dm.heldout_indices)}, current_best={trace[-1]:.4f}"
                 )
-            chosen_original_indices_np = to_1d_int_numpy(dm.heldout_indices[indices_np])
-            heldout_indices_np = to_1d_int_numpy(dm.heldout_indices)
-            chosen_value = float(dm.y[chosen_original_indices_np[0]].item())
-            dm.train_indexes = np.append(to_1d_int_numpy(dm.train_indexes), chosen_original_indices_np)
-            dm.heldout_indices = np.delete(heldout_indices_np, indices_np)
-            dm.train_indexes = to_1d_int_numpy(dm.train_indexes)
-            dm.heldout_indices = to_1d_int_numpy(dm.heldout_indices)
-            dm.train_x = dm.x[dm.train_indexes]
-            dm.train_y = dm.y[dm.train_indexes]
-            dm.heldout_x = dm.x[dm.heldout_indices]
-            dm.heldout_y = dm.y[dm.heldout_indices]
-            trace.append(float(dm.train_y.max().item()))
-            log(
-                f"[GOLLuM] Trial {seed + 1} selected idx={int(chosen_original_indices_np[0])} "
-                f"observed={chosen_value:.4f} new_best={trace[-1]:.4f}"
-            )
+                train_x = dm.train_x.clone().to(device)
+                train_y = dm.train_y.clone().to(device)
+                design_space = dm.heldout_x.clone().to(device)
+                stage_start = time.perf_counter()
+                log(f"[GOLLuM] Trial {seed + 1} iteration {step + 1}: fitting DeepGP and optimizing acquisition...")
+                x_next, indices = bo.suggest_next_experiments(
+                    train_x, train_y, design_space, return_indices=True
+                )
+                stage_elapsed = time.perf_counter() - stage_start
+                log(f"[GOLLuM] Trial {seed + 1} iteration {step + 1}: model fit + acquisition finished in {stage_elapsed:.1f}s")
+                indices_np = to_1d_int_numpy(indices)
+                if indices_np.size != 1:
+                    raise RuntimeError(
+                        f"Expected exactly one selected candidate, got {indices_np.size}. "
+                        f"indices={indices_np.tolist()}"
+                    )
+                chosen_original_indices_np = to_1d_int_numpy(dm.heldout_indices[indices_np])
+                heldout_indices_np = to_1d_int_numpy(dm.heldout_indices)
+                chosen_value = float(dm.y[chosen_original_indices_np[0]].item())
+                dm.train_indexes = np.append(to_1d_int_numpy(dm.train_indexes), chosen_original_indices_np)
+                dm.heldout_indices = np.delete(heldout_indices_np, indices_np)
+                dm.train_indexes = to_1d_int_numpy(dm.train_indexes)
+                dm.heldout_indices = to_1d_int_numpy(dm.heldout_indices)
+                dm.train_x = dm.x[dm.train_indexes]
+                dm.train_y = dm.y[dm.train_indexes]
+                dm.heldout_x = dm.x[dm.heldout_indices]
+                dm.heldout_y = dm.y[dm.heldout_indices]
+                selected_indices.append(int(chosen_original_indices_np[0]))
+                observed_values.append(chosen_value)
+                phases.append("bo")
+                trace.append(float(max(trace[-1], chosen_value)))
+                progress.update(1)
+                progress.set_postfix_str(f"best={trace[-1]:.4f}")
+                log(
+                    f"[GOLLuM] Trial {seed + 1} selected idx={int(chosen_original_indices_np[0])} "
+                    f"observed={chosen_value:.4f} new_best={trace[-1]:.4f}"
+                )
     finally:
         run.finish()
 
+    if len(observed_values) != total_budget:
+        raise RuntimeError(
+            f"GOLLuM expected {total_budget} evaluations but recorded {len(observed_values)}."
+        )
     log(f"[GOLLuM] Trial {seed + 1} finished with final_best={trace[-1]:.4f}")
-    return np.array(trace, dtype=float)
+    return build_trial_trace(
+        selected_indices=selected_indices,
+        observed_values=observed_values,
+        phases=phases,
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run GOLLuM DeepGP on DAR or OCM.")
-    parser.add_argument("--dataset", choices=["dar", "ocm"], required=True)
+    parser = argparse.ArgumentParser(description="Run GOLLuM DeepGP on a tabular chemistry dataset.")
+    parser.add_argument("--dataset", required=True)
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--trial-start-index", type=int, default=1)
     parser.add_argument("--seed-start", type=int, default=0)
     parser.add_argument("--total-budget", type=int, default=40)
     parser.add_argument("--init-size", type=int, default=None)
+    parser.add_argument("--data-path", default=None)
+    parser.add_argument("--target-column", default=None)
+    parser.add_argument("--feature-columns", default=None)
+    parser.add_argument("--exclude-columns", default=None)
+    parser.add_argument("--text-columns", default=None)
     parser.add_argument("--append-to-existing", action="store_true")
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
@@ -357,15 +428,24 @@ def main():
     existing_payload = load_existing_results(results_path) if args.append_to_existing else None
     if existing_payload is None:
         existing_results = None
+        existing_trace_lengths = None
         existing_trial_numbers = np.empty(0, dtype=int)
     else:
-        existing_results, existing_trial_numbers = existing_payload
+        existing_results, existing_trace_lengths, existing_trial_numbers = existing_payload
         overlap = np.intersect1d(existing_trial_numbers, requested_trial_numbers)
         if overlap.size:
             overlap_text = ", ".join(f"trial_{trial_number:02d}" for trial_number in overlap.tolist())
             raise ValueError(f"Refusing to overwrite existing GOLLuM trial(s): {overlap_text}")
-    data_path = build_processed_dataset(args.dataset, output_dir / "prepared_data")
-    _, raw_df = load_benchmark_spec(ROOT, args.dataset)
+    spec, raw_df = load_benchmark_spec(
+        ROOT,
+        args.dataset,
+        data_path=args.data_path,
+        target_column=args.target_column,
+        feature_columns=args.feature_columns,
+        exclude_columns=args.exclude_columns,
+        text_columns=args.text_columns,
+    )
+    data_path = build_processed_dataset(args.dataset, spec, raw_df, output_dir / "prepared_data")
     if args.total_budget > len(raw_df):
         raise ValueError(f"--total-budget={args.total_budget} exceeds dataset size {len(raw_df)}.")
     log(
@@ -375,20 +455,41 @@ def main():
     )
     log(f"[GOLLuM][{args.dataset.upper()}] Writing outputs to {output_dir}")
 
-    traces = []
+    traces: list[TrialTrace] = []
     for offset in range(args.trials):
         seed = args.seed_start + offset
         traces.append(run_trial(data_path, seed, args.total_budget, resolved_init_size))
 
-    new_results = np.vstack(traces)
-    if existing_results is not None:
-        results = np.vstack([existing_results, new_results])
+    new_results, new_trace_lengths = build_best_results_matrix(traces)
+    if existing_results is not None and existing_trace_lengths is not None:
+        combined_width = max(existing_results.shape[1], new_results.shape[1])
+        results = np.concatenate(
+            [
+                _pad_results_matrix(existing_results, combined_width),
+                _pad_results_matrix(new_results, combined_width),
+            ],
+            axis=0,
+        )
+        trace_lengths = np.concatenate([existing_trace_lengths, new_trace_lengths])
         trial_numbers = np.concatenate([existing_trial_numbers, requested_trial_numbers])
     else:
         results = new_results
+        trace_lengths = new_trace_lengths
         trial_numbers = requested_trial_numbers
     output_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(results_path, results=results, trial_numbers=trial_numbers)
+    np.savez(
+        results_path,
+        results=results,
+        trace_lengths=trace_lengths,
+        trial_numbers=trial_numbers,
+    )
+    export_trajectory_artifacts(
+        output_dir=output_dir,
+        stem=f"{args.dataset}_gollum",
+        traces=traces,
+        trial_numbers=requested_trial_numbers,
+    )
+    initial_values, final_values = summarize_best_results(results, trace_lengths)
     summary = {
         "dataset": args.dataset,
         "trials": int(len(trial_numbers)),
@@ -396,9 +497,14 @@ def main():
         "total_budget": args.total_budget,
         "init_size": resolved_init_size,
         "backbone_model": "t5-base",
-        "initial_mean": float(results[:, 0].mean()),
-        "final_mean": float(results[:, -1].mean()),
-        "final_std": float(results[:, -1].std()),
+        "data_path": str(spec.data_path),
+        "target_column": spec.target_column,
+        "feature_columns": spec.feature_columns,
+        "text_columns": spec.text_columns,
+        "actual_evaluations_per_trial": trace_lengths.tolist(),
+        "initial_mean": float(initial_values.mean()),
+        "final_mean": float(final_values.mean()),
+        "final_std": float(final_values.std()),
     }
     (output_dir / f"{args.dataset}_gollum_summary.json").write_text(
         json.dumps(summary, indent=2),

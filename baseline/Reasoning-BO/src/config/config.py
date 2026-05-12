@@ -21,8 +21,8 @@ class Config:
         self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         self.OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME")
         self.KIMI_API_KEY = (
-            os.getenv("REASONINGBO_API_KEY")
-            or os.getenv("DASHSCOPE_API_KEY")
+            os.getenv("DASHSCOPE_API_KEY")
+            or os.getenv("REASONINGBO_API_KEY")
             or os.getenv("MOONSHOT_API_KEY")
             or os.getenv("OPENAI_API_KEY")
         )

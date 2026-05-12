@@ -9,3 +9,8 @@ wandb/
 
 *.log
 *.tmp
+.cache/
+baseline/lmabo/numerical_results/
+baseline/bora/experiments/
+baseline/bora/.git/
+**/.git/

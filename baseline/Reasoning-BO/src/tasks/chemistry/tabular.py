@@ -22,13 +22,27 @@ def _drop_index_like_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _normalize_param_value(value: TParamValue, kind: str) -> TParamValue:
+    if pd.isna(value):
+        if kind == "string":
+            return "nan"
+        return value
+    if kind == "string":
+        return str(value)
+    return value
+
+
 @dataclass(frozen=True)
 class TabularChemistryData:
     param_names: list[str]
+    param_kinds: dict[str, str]
     objective_dict: dict[tuple[TParamValue, ...], float]
 
     def evaluate(self, params: TParameterization) -> float:
-        key = tuple(params[pname] for pname in self.param_names)
+        key = tuple(
+            _normalize_param_value(params[pname], self.param_kinds[pname])
+            for pname in self.param_names
+        )
         return self.objective_dict[key]
 
 
@@ -40,9 +54,19 @@ def load_tabular_chemistry_data(
     df = pd.read_csv(data_path)
     df = _drop_index_like_columns(df)
     param_names = feature_columns or [col for col in df.columns if col != target_column]
+    param_kinds = {
+        column: "numeric" if pd.api.types.is_numeric_dtype(df[column]) else "string"
+        for column in param_names
+    }
+    normalized_df = df.copy()
+    for column in param_names:
+        normalized_df[column] = normalized_df[column].map(
+            lambda value, kind=param_kinds[column]: _normalize_param_value(value, kind)
+        )
     return TabularChemistryData(
         param_names=param_names,
-        objective_dict=df.set_index(param_names)[target_column].to_dict(),
+        param_kinds=param_kinds,
+        objective_dict=normalized_df.set_index(param_names)[target_column].to_dict(),
     )
 
 

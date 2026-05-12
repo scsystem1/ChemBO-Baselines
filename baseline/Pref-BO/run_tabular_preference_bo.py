@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT / "baseline"))
 
 from common.tabular_benchmarks import dataframe_to_one_hot, load_benchmark_spec
+from common.progress import progress_bar, progress_log
 from kimi_client import call_kimi_chat, parse_jsonish_response
 from model import GP_Model, compute_probability, train_preference
 from acquisition import acquire, optim
@@ -260,7 +261,7 @@ def compare_optional_arrays(
 
 
 def log(message: str) -> None:
-    print(message, flush=True)
+    progress_log(message)
 
 
 def estimate_prompt_tokens(text: str) -> int:
@@ -418,98 +419,104 @@ def run_llm_survey(dataset_name: str, df: pd.DataFrame, questions: np.ndarray, o
             f"[PrefBO][{dataset_name.upper()}] Resuming survey with "
             f"{len(answered_by_question)} existing answers already recorded."
         )
-    for q_idx, (idx_a, idx_b) in enumerate(questions):
-        if q_idx in answered_by_question:
-            if (q_idx + 1) % SURVEY_PROGRESS_EVERY == 0 or q_idx == len(questions) - 1:
-                log(
-                    f"[PrefBO][{dataset_name.upper()}] Survey progress: "
-                    f"{q_idx + 1}/{len(questions)} questions, api_calls={api_calls}, "
-                    f"est_input_tokens={cumulative_input_tokens}, "
-                    f"est_output_tokens={cumulative_output_tokens}"
-                )
-            continue
-        log(
-            f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)}: "
-            f"compare idx_a={int(idx_a)} vs idx_b={int(idx_b)}"
-        )
-        prompt = build_prompt(dataset_name, df.iloc[idx_a], df.iloc[idx_b], context_df)
-        prompt_tokens = estimate_prompt_tokens(prompt)
-        success = False
-        for attempt in range(1, SURVEY_MAX_ATTEMPTS + 1):
-            raw = call_kimi_chat(prompt)
-            response_tokens = estimate_prompt_tokens(raw)
-            api_calls += 1
-            cumulative_input_tokens += prompt_tokens
-            cumulative_output_tokens += response_tokens
-            append_jsonl(
-                raw_jsonl,
-                {
-                    "question": int(q_idx),
-                    "attempt": attempt,
-                    "idx_a": int(idx_a),
-                    "idx_b": int(idx_b),
-                    "prompt": prompt,
-                    "raw_response": raw,
-                    "prompt_tokens_est": prompt_tokens,
-                    "response_tokens_est": response_tokens,
-                },
+    with progress_bar(total=len(questions), desc=f"PrefBO survey {dataset_name.upper()}", unit="question") as progress:
+        progress.set_postfix_str(f"api_calls={api_calls}")
+        for q_idx, (idx_a, idx_b) in enumerate(questions):
+            if q_idx in answered_by_question:
+                progress.update(1)
+                progress.set_postfix_str(f"api_calls={api_calls}")
+                if (q_idx + 1) % SURVEY_PROGRESS_EVERY == 0 or q_idx == len(questions) - 1:
+                    log(
+                        f"[PrefBO][{dataset_name.upper()}] Survey progress: "
+                        f"{q_idx + 1}/{len(questions)} questions, api_calls={api_calls}, "
+                        f"est_input_tokens={cumulative_input_tokens}, "
+                        f"est_output_tokens={cumulative_output_tokens}"
+                    )
+                continue
+            log(
+                f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)}: "
+                f"compare idx_a={int(idx_a)} vs idx_b={int(idx_b)}"
             )
-            try:
-                parsed = parse_jsonish_response(raw)
-                predicted_setup = str(parsed.get("Setup", "A")).strip().upper()
-                if predicted_setup not in {"A", "B"}:
-                    predicted_setup = "A"
-                row = {
-                    "question": q_idx,
-                    "idx_a": int(idx_a),
-                    "idx_b": int(idx_b),
-                    "pred_setup": predicted_setup,
-                    "raw_response": raw,
-                    "prompt_tokens_est": prompt_tokens,
-                    "response_tokens_est": response_tokens,
-                    "reasoning": parsed.get("reasoning", ""),
-                    "status": "success",
-                    "attempts_used": attempt,
-                }
-                append_survey_row(survey_csv, row)
-                answered_by_question[q_idx] = row
-                comparisons.append(comparison_from_row(row))
-                log(
-                    f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} answered: "
-                    f"pred_setup={predicted_setup}"
-                )
-                success = True
-                break
-            except Exception as exc:
+            prompt = build_prompt(dataset_name, df.iloc[idx_a], df.iloc[idx_b], context_df)
+            prompt_tokens = estimate_prompt_tokens(prompt)
+            success = False
+            for attempt in range(1, SURVEY_MAX_ATTEMPTS + 1):
+                raw = call_kimi_chat(prompt)
+                response_tokens = estimate_prompt_tokens(raw)
+                api_calls += 1
+                cumulative_input_tokens += prompt_tokens
+                cumulative_output_tokens += response_tokens
                 append_jsonl(
-                    failure_jsonl,
+                    raw_jsonl,
                     {
                         "question": int(q_idx),
                         "attempt": attempt,
                         "idx_a": int(idx_a),
                         "idx_b": int(idx_b),
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "prompt": prompt,
                         "raw_response": raw,
+                        "prompt_tokens_est": prompt_tokens,
+                        "response_tokens_est": response_tokens,
                     },
                 )
-                if attempt < SURVEY_MAX_ATTEMPTS:
+                try:
+                    parsed = parse_jsonish_response(raw)
+                    predicted_setup = str(parsed.get("Setup", "A")).strip().upper()
+                    if predicted_setup not in {"A", "B"}:
+                        predicted_setup = "A"
+                    row = {
+                        "question": q_idx,
+                        "idx_a": int(idx_a),
+                        "idx_b": int(idx_b),
+                        "pred_setup": predicted_setup,
+                        "raw_response": raw,
+                        "prompt_tokens_est": prompt_tokens,
+                        "response_tokens_est": response_tokens,
+                        "reasoning": parsed.get("reasoning", ""),
+                        "status": "success",
+                        "attempts_used": attempt,
+                    }
+                    append_survey_row(survey_csv, row)
+                    answered_by_question[q_idx] = row
+                    comparisons.append(comparison_from_row(row))
                     log(
-                        f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} "
-                        f"parse failed on attempt {attempt}/{SURVEY_MAX_ATTEMPTS}; retrying"
+                        f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} answered: "
+                        f"pred_setup={predicted_setup}"
                     )
-        if not success:
-            log(
-                f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} "
-                "failed after all retries; leaving it unanswered for a later resume"
-            )
-        completed = q_idx + 1
-        if completed % SURVEY_PROGRESS_EVERY == 0 or completed == len(questions):
-            log(
-                f"[PrefBO][{dataset_name.upper()}] Survey progress: "
-                f"{completed}/{len(questions)} questions, api_calls={api_calls}, "
-                f"est_input_tokens={cumulative_input_tokens}, "
-                f"est_output_tokens={cumulative_output_tokens}"
-            )
+                    success = True
+                    break
+                except Exception as exc:
+                    append_jsonl(
+                        failure_jsonl,
+                        {
+                            "question": int(q_idx),
+                            "attempt": attempt,
+                            "idx_a": int(idx_a),
+                            "idx_b": int(idx_b),
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "raw_response": raw,
+                        },
+                    )
+                    if attempt < SURVEY_MAX_ATTEMPTS:
+                        log(
+                            f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} "
+                            f"parse failed on attempt {attempt}/{SURVEY_MAX_ATTEMPTS}; retrying"
+                        )
+            if not success:
+                log(
+                    f"[PrefBO][{dataset_name.upper()}] Survey question {q_idx + 1}/{len(questions)} "
+                    "failed after all retries; leaving it unanswered for a later resume"
+                )
+            progress.update(1)
+            progress.set_postfix_str(f"api_calls={api_calls}")
+            completed = q_idx + 1
+            if completed % SURVEY_PROGRESS_EVERY == 0 or completed == len(questions):
+                log(
+                    f"[PrefBO][{dataset_name.upper()}] Survey progress: "
+                    f"{completed}/{len(questions)} questions, api_calls={api_calls}, "
+                    f"est_input_tokens={cumulative_input_tokens}, "
+                    f"est_output_tokens={cumulative_output_tokens}"
+                )
     if survey_csv.exists():
         deduped = load_existing_survey(survey_csv).sort_values("question").drop_duplicates(
             subset=["question"], keep="last"
@@ -544,58 +551,63 @@ def run_trial(
     )
     bo_steps = total_budget - init_size
 
-    for step in range(bo_steps):
-        log(
-            f"[PrefBO] Trial seed={seed} iteration {step + 1}/{bo_steps}: "
-            f"evaluated={len(done_idx)}, remaining={len(remaining_idx)}, current_best={best_trace[-1]:.4f}"
-        )
-        scaler = StandardScaler()
-        y_train = y[done_idx].reshape(-1, 1)
-        if step > 0:
-            y_train = scaler.fit_transform(y_train).flatten()
-        else:
-            y_train = y_train.flatten()
+    with progress_bar(total=total_budget, desc=f"PrefBO seed={seed}", unit="eval") as progress:
+        progress.update(len(done_idx))
+        progress.set_postfix_str(f"best={best_trace[-1]:.4f}")
+        for step in range(bo_steps):
+            log(
+                f"[PrefBO] Trial seed={seed} iteration {step + 1}/{bo_steps}: "
+                f"evaluated={len(done_idx)}, remaining={len(remaining_idx)}, current_best={best_trace[-1]:.4f}"
+            )
+            scaler = StandardScaler()
+            y_train = y[done_idx].reshape(-1, 1)
+            if step > 0:
+                y_train = scaler.fit_transform(y_train).flatten()
+            else:
+                y_train = y_train.flatten()
 
-        x_train = torch.tensor(X[done_idx], dtype=torch.float64)
-        y_train_t = torch.tensor(y_train, dtype=torch.float64)
-        surrogate = GP_Model(
-            x_train,
-            y_train_t,
-            gpu=False,
-            nu=2.5,
-            noise_constraint=1e-5,
-            lengthscale_prior=[GammaPrior(2.0, 0.2), 5.0],
-            outputscale_prior=[GammaPrior(5.0, 0.5), 8.0],
-            noise_prior=[GammaPrior(1.5, 0.5), 1.0],
-            n_restarts=0,
-            learning_rate=0.1,
-            training_iters=100,
-        )
-        surrogate.fit()
+            x_train = torch.tensor(X[done_idx], dtype=torch.float64)
+            y_train_t = torch.tensor(y_train, dtype=torch.float64)
+            surrogate = GP_Model(
+                x_train,
+                y_train_t,
+                gpu=False,
+                nu=2.5,
+                noise_constraint=1e-5,
+                lengthscale_prior=[GammaPrior(2.0, 0.2), 5.0],
+                outputscale_prior=[GammaPrior(5.0, 0.5), 8.0],
+                noise_prior=[GammaPrior(1.5, 0.5), 1.0],
+                n_restarts=0,
+                learning_rate=0.1,
+                training_iters=100,
+            )
+            surrogate.fit()
 
-        opt = optim(
-            surrogate=surrogate,
-            input_space=torch.tensor(X[remaining_idx], dtype=torch.float64),
-            method="pibo",
-            preference=preference_scores[remaining_idx],
-        )
+            opt = optim(
+                surrogate=surrogate,
+                input_space=torch.tensor(X[remaining_idx], dtype=torch.float64),
+                method="pibo",
+                preference=preference_scores[remaining_idx],
+            )
 
-        class Args:
-            def __init__(self, fmax: float, iteration: int):
-                self.fmax = fmax
-                self.beta = 10.0
-                self.iter = iteration
+            class Args:
+                def __init__(self, fmax: float, iteration: int):
+                    self.fmax = fmax
+                    self.beta = 10.0
+                    self.iter = iteration
 
-        args = Args(float(np.max(y_train if step > 0 else y[done_idx])), step + 1)
-        chosen_local_idx = acquire(opt, args)
-        chosen_idx = int(remaining_idx[chosen_local_idx])
-        remaining_idx = np.delete(remaining_idx, chosen_local_idx)
-        done_idx = np.append(done_idx, chosen_idx)
-        best_trace.append(float(np.max(y[done_idx])))
-        log(
-            f"[PrefBO] Trial seed={seed} selected idx={chosen_idx} "
-            f"observed={float(y[chosen_idx]):.4f} new_best={best_trace[-1]:.4f}"
-        )
+            args = Args(float(np.max(y_train if step > 0 else y[done_idx])), step + 1)
+            chosen_local_idx = acquire(opt, args)
+            chosen_idx = int(remaining_idx[chosen_local_idx])
+            remaining_idx = np.delete(remaining_idx, chosen_local_idx)
+            done_idx = np.append(done_idx, chosen_idx)
+            best_trace.append(float(np.max(y[done_idx])))
+            progress.update(1)
+            progress.set_postfix_str(f"best={best_trace[-1]:.4f}")
+            log(
+                f"[PrefBO] Trial seed={seed} selected idx={chosen_idx} "
+                f"observed={float(y[chosen_idx]):.4f} new_best={best_trace[-1]:.4f}"
+            )
 
     log(f"[PrefBO] Trial seed={seed} finished with final_best={best_trace[-1]:.4f}")
     return np.array(best_trace, dtype=float)
@@ -633,12 +645,15 @@ def main():
         raise ValueError("--init-size must be smaller than --total-budget.")
     requires_llm = args.preferences_file is None
     if requires_llm and not (
-        os.getenv("PREFBO_API_KEY")
-        or os.getenv("DASHSCOPE_API_KEY")
+        os.getenv("DASHSCOPE_API_KEY")
+        or os.getenv("PREFBO_API_KEY")
         or os.getenv("MOONSHOT_API_KEY")
         or os.getenv("OPENAI_API_KEY")
     ):
-        raise RuntimeError("Missing Kimi-compatible API key. Set DASHSCOPE_API_KEY, MOONSHOT_API_KEY, PREFBO_API_KEY, or OPENAI_API_KEY.")
+        raise RuntimeError(
+            "Missing Kimi-compatible API key. Set DASHSCOPE_API_KEY "
+            "(preferred), PREFBO_API_KEY, MOONSHOT_API_KEY, or OPENAI_API_KEY."
+        )
 
     spec, df = load_benchmark_spec(ROOT, args.dataset)
     if args.total_budget > len(df):

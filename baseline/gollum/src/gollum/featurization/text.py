@@ -2,9 +2,11 @@ from dataclasses import dataclass
 import os
 from typing import Optional
 import torch
+from gollum.utils.device import resolve_device_type
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
-torch.cuda.empty_cache()
+if resolve_device_type() == "cuda" and torch.cuda.is_available():
+    torch.cuda.empty_cache()
 
 import numpy as np
 
@@ -96,7 +98,8 @@ MODEL_CONFIGS = {
 }
 
 
-def get_model_and_tokenizer(model_name: str, device: str='cuda'):
+def get_model_and_tokenizer(model_name: str, device: Optional[str] = None):
+    device = resolve_device_type(device)
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name, trust_remote_code=True
@@ -121,8 +124,9 @@ def get_tokens(
     texts,
     model_name="WhereIsAI/UAE-Large-V1",
     batch_size=32,
-    device="cuda" if torch.cuda.is_available() else "cpu",
+    device=None,
 ):
+    device = resolve_device_type(device)
     print(model_name, "for get tokens")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
@@ -160,12 +164,13 @@ def get_huggingface_embeddings(
     batch_size=8,
     pooling_method="cls",
     prefix=None,
-    device="cuda" if torch.cuda.is_available() else "cpu",
+    device=None,
     normalize_embeddings=False,
 ):
     """
     General function to get embeddings from a HuggingFace transformer model.
     """
+    device = resolve_device_type(device)
     print(f"featurizing with {model_name}")
     model, tokenizer = get_model_and_tokenizer(model_name, device)
     left_padding = tokenizer.padding_side == "left"
@@ -263,9 +268,6 @@ def instructor_embeddings(
 
 
     return np.concatenate(sentence_embeddings_list, axis=0)
-
-
-
 
 
 

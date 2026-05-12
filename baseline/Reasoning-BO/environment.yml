@@ -1,17 +1,15 @@
 name: reasoning_bo
 channels:
   - conda-forge
-  - pytorch
 dependencies:
   - python=3.10
-  - pip
-  - numpy
-  - pandas
-  - scipy
-  - matplotlib
-  - pytorch
-  - gym=0.26.2
+  - pip>=24
+  - numpy=1.26.4
+  - pandas=2.2.3
+  - scipy=1.15.2
+  - matplotlib-base=3.10.1
   - pip:
+      - torch==2.4.1
       - ax-platform==0.5.0
       - botorch==0.13.0
       - gpytorch==1.14
@@ -20,4 +18,5 @@ dependencies:
       - pyre-extensions
       - camel-ai==0.2.22
       - swanlab
+      - gym==0.26.2
       - Box2D
