@@ -3,7 +3,7 @@ cd /home/sjtu/LLMBO/ChemBO-Baselines
 export DASHSCOPE_API_KEY='sk-565d62c64d2740e69f3acdadc7f58974'
 OUT_ROOT="outputs/formal_runs"
 TARGET_TRIALS="${TARGET_TRIALS:-3}"
-DATASETS="${DATASETS:- ocm }"
+DATASETS="${DATASETS:- dar suzuki oer }"
 TOTAL_BUDGET="${TOTAL_BUDGET:-40}"
 INIT_SIZE="${INIT_SIZE:-10}"
 CAKE_MODEL="${CAKE_MODEL:-kimi-k2.5}"
