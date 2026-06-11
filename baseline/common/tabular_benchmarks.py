@@ -7,6 +7,13 @@ from typing import Iterable, Sequence
 import pandas as pd
 
 OCM_NON_VARIABLE_COLUMNS = {"Name", "M1_mol", "M2_mol", "M3_mol"}
+HPOBENCH_TARGET_COLUMN = "test_acc"
+HPOBENCH_DATASETS = {
+    "hpobench_rf_146606",
+    "hpobench_svm_146212",
+    "hpobench_xgb_146606",
+    "hpobench_nn_168912",
+}
 DEFAULT_TARGET_CANDIDATES = (
     "yield",
     "Yield",
@@ -74,6 +81,8 @@ def _resolve_builtin_dataset(
         return root / "data" / "OER.csv", "objective", set()
     if dataset_key == "suzuki":
         return root / "data" / "suzuki.csv", "Product_Yield_PCT_Area_UV", set()
+    if dataset_key in HPOBENCH_DATASETS:
+        return root / "data" / "HPOBench" / f"{dataset_key}.csv", HPOBENCH_TARGET_COLUMN, set()
     auto_path = root / "data" / f"{dataset_name.upper()}.csv"
     if auto_path.exists():
         return auto_path, None, set()

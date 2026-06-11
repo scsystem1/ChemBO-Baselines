@@ -8,7 +8,7 @@ OUT_ROOT="${OUT_ROOT:-outputs/hpobench_baselines}"
 PROBLEMS="${PROBLEMS:-hpobench_rf_146606 hpobench_svm_146212 hpobench_xgb_146606 hpobench_nn_168912}"
 TARGET_TRIALS="${TARGET_TRIALS:-3}"
 TOTAL_BUDGET="${TOTAL_BUDGET:-40}"
-INIT_SIZE="${INIT_SIZE:-5}"
+INIT_SIZE="${INIT_SIZE:-10}"
 TARGET_COLUMN="${TARGET_COLUMN:-test_acc}"
 
 CAKE_CONDA_ENV="${CAKE_CONDA_ENV:-cake}"

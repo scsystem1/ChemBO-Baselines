@@ -1,0 +1,7 @@
+hebo==0.3.6
+torch==2.7.1+cu128
+numpy==1.24.4
+scipy==1.12.0
+pandas==2.3.3
+openpyxl==3.1.5
+tqdm==4.67.1
